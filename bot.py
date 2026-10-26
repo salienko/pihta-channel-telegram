@@ -109,7 +109,11 @@ def build(bot, core):
                 await call.answer()
                 await channel.handle_error(call.message, error)
                 return
-            await call.answer(screen.get('notice') or None)
+            await call.answer()
+            # The notice is a real message, not a toast over the button: the guest
+            # must see "готовим ссылку" in the chat, and the link follows as its own message.
+            if screen.get('notice'):
+                await call.message.answer(screen['notice'])
             if screen.get('nothing'):
                 return
             await channel.show(call.message, screen, edit=True)
