@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -129,7 +130,11 @@ async def health_server(port):
 
 
 async def main():
-    token = os.getenv('BOT_TOKEN', '').strip()
+    raw = os.getenv('CHANNEL_BOT_TOKEN') or os.getenv('BOT_TOKEN') or ''
+    token = raw.strip()
+    log.info('token source=%s len=%s format_ok=%s',
+             'channel' if os.getenv('CHANNEL_BOT_TOKEN') else 'platform',
+             len(token), bool(re.fullmatch(r'\d{6,}:[A-Za-z0-9_-]{30,}', token)))
     core_url = os.getenv('CORE_URL', '').strip()
     core_token = os.getenv('CORE_API_TOKEN', '').strip()
     if not token or not core_url or not core_token:
