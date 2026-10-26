@@ -1,5 +1,6 @@
 """Thin Telegram channel: receive update, ask the core, draw the screen."""
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -116,17 +117,40 @@ def build(bot, core):
     return dp
 
 
-async def health_server(port):
-    app = web.Application()
+async def http_server(port, bot, core_token):
+    """Health probe for Bothost and the delivery endpoint the core pushes to."""
+    app = web.Application(client_max_size=65536)
 
     async def health(request):
         return web.json_response({'status': 'ok', 'service': 'pihta-channel-telegram'})
 
-    app.add_routes([web.get('/health', health)])
+    async def deliver(request):
+        supplied = request.headers.get('X-Core-Token', '')
+        if not core_token or not hmac.compare_digest(supplied, core_token):
+            return web.json_response({'error': 'unauthorized'}, status=401)
+        body = await request.json()
+        try:
+            user_id, text = int(body['external_id']), str(body['text'])
+        except (KeyError, TypeError, ValueError):
+            return web.json_response({'error': 'external_id and text required'}, status=400)
+        rows = body.get('rows') or []
+        markup = keyboard({'rows': rows}) if rows else None
+        parts = chunks(text)
+        try:
+            for index, part in enumerate(parts):
+                await bot.send_message(user_id, part,
+                                       reply_markup=markup if index == len(parts) - 1 else None)
+        except Exception as error:
+            log.error('delivery failed: %s', type(error).__name__)
+            return web.json_response({'error': 'send_failed'}, status=502)
+        return web.json_response({'ok': True})
+
+    app.add_routes([web.get('/health', health), web.post('/deliver', deliver)])
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', port).start()
-    log.info('health listener on 0.0.0.0:%s', port)
+    log.info('http listener on 0.0.0.0:%s', port)
+    return runner
 
 
 async def main():
@@ -144,7 +168,7 @@ async def main():
     dp = build(bot, core)
     port = os.getenv('PORT', '').strip()
     if port:
-        await health_server(int(port))
+        await http_server(int(port), bot, core_token)
     log.info('release=%s core=%s polling started', os.getenv('RELEASE', 'dev'), core_url)
     try:
         await dp.start_polling(bot, allowed_updates=['message', 'callback_query'])
