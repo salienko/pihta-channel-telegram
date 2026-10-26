@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import BotCommand, CallbackQuery, FSInputFile, Message
 from aiohttp import web
 
 from core_client import Core, CoreError
@@ -21,6 +21,16 @@ log = logging.getLogger('channel.telegram')
 
 ASSETS = Path(__file__).with_name('assets')
 PHOTO_CAPTION_LIMIT = 1000
+
+# Telegram hides its «Запустить» button for good once a chat has been started, so the
+# command menu is the permanent way back to the main screen: ☰ → «Главное меню».
+COMMANDS = [BotCommand(command='start', description='🏠 Главное меню'),
+            BotCommand(command='book', description='📅 Забронировать'),
+            BotCommand(command='bookings', description='📋 Мои бронирования'),
+            BotCommand(command='help', description='ℹ️ Помощь')]
+PERMANENT_ERRORS = ('chat not found', 'user not found', 'bot was blocked',
+                    'user is deactivated', 'peer_id_invalid', 'chat_id is empty',
+                    'bot can\'t initiate conversation')
 
 
 class Channel:
@@ -145,8 +155,11 @@ async def http_server(port, bot, core_token):
                 await bot.send_message(user_id, part,
                                        reply_markup=markup if index == len(parts) - 1 else None)
         except Exception as error:
-            log.error('delivery failed: %s', type(error).__name__)
-            return web.json_response({'error': 'send_failed'}, status=502)
+            reason = str(error).lower()
+            permanent = any(marker in reason for marker in PERMANENT_ERRORS)
+            log.error('delivery failed: %s permanent=%s', type(error).__name__, permanent)
+            return web.json_response({'error': 'send_failed', 'permanent': permanent},
+                                     status=410 if permanent else 502)
         return web.json_response({'ok': True})
 
     app.add_routes([web.get('/health', health), web.post('/deliver', deliver)])
@@ -173,6 +186,11 @@ async def main():
     port = os.getenv('PORT', '').strip()
     if port:
         await http_server(int(port), bot, core_token)
+    try:
+        await bot.set_my_commands(COMMANDS)
+        log.info('command menu registered')
+    except Exception as error:
+        log.warning('command menu failed: %s', error)
     log.info('release=%s core=%s polling started', os.getenv('RELEASE', 'dev'), core_url)
     try:
         await dp.start_polling(bot, allowed_updates=['message', 'callback_query'])

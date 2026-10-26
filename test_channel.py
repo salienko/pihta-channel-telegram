@@ -5,6 +5,7 @@ import unittest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+import bot as channel_bot
 from core_client import Core, CoreError
 from render import chunks, keyboard
 
@@ -131,3 +132,43 @@ class Drawing(unittest.IsolatedAsyncioTestCase):
         message = StubMessage()
         await self.channel.show(message, {'text': 'Экран', 'photo': 'home', 'rows': []})
         self.assertEqual(message.sent[0][0], 'Экран')
+
+
+class Delivery(unittest.IsolatedAsyncioTestCase):
+    """Delivery errors must tell the core whether a retry can ever help."""
+
+    class Bot:
+        def __init__(self, error=None):
+            self.error, self.sent = error, []
+
+        async def send_message(self, chat_id, text, reply_markup=None):
+            if self.error:
+                raise self.error
+            self.sent.append((chat_id, text))
+
+    async def status_for(self, bot):
+        import aiohttp
+        runner = await channel_bot.http_server(0, bot, 'tok')
+        port = runner.addresses[0][1]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f'http://127.0.0.1:{port}/deliver',
+                                        json={'external_id': 5, 'text': 'привет'},
+                                        headers={'X-Core-Token': 'tok'}) as response:
+                    return response.status
+        finally:
+            await runner.cleanup()
+
+    async def test_unknown_chat_is_permanent(self):
+        status = await self.status_for(self.Bot(Exception('Bad Request: chat not found')))
+        self.assertEqual(status, 410)
+
+    async def test_network_error_is_retryable(self):
+        status = await self.status_for(self.Bot(Exception('timeout')))
+        self.assertEqual(status, 502)
+
+    async def test_successful_delivery(self):
+        bot = self.Bot()
+        status = await self.status_for(bot)
+        self.assertEqual(status, 200)
+        self.assertEqual(bot.sent, [(5, 'привет')])
